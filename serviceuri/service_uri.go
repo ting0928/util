@@ -113,13 +113,34 @@ func Build(profile Profile, service Service, opts Options) (Result, error) {
 		root, err := BuildAPIRoot(scheme, profile.FQDN, port, prefix)
 		return Result{APIRoot: root}, err
 	}
-	addresses := append([]string{}, profile.IPv4Addresses...)
-	addresses = append(addresses, profile.IPv6Addresses...)
+	addresses, err := profileAddresses(profile)
+	if err != nil {
+		return Result{}, err
+	}
 	if len(addresses) == 0 {
 		return Result{}, ErrAddressUnavailable
 	}
 	root, err := BuildAPIRoot(scheme, addresses[rand.Intn(len(addresses))], port, prefix)
 	return Result{APIRoot: root}, err
+}
+
+// profileAddresses returns the NFProfile IPv4 and IPv6 addresses after
+// validating that each one is a literal address of the expected family.
+func profileAddresses(profile Profile) ([]string, error) {
+	addresses := make([]string, 0, len(profile.IPv4Addresses)+len(profile.IPv6Addresses))
+	for _, addr := range profile.IPv4Addresses {
+		if err := validator.ValidateIpEndPoint(addr, "", 0); err != nil {
+			return nil, fmt.Errorf("invalid NFProfile IPv4 address: %w", err)
+		}
+		addresses = append(addresses, addr)
+	}
+	for _, addr := range profile.IPv6Addresses {
+		if err := validator.ValidateIpEndPoint("", addr, 0); err != nil {
+			return nil, fmt.Errorf("invalid NFProfile IPv6 address: %w", err)
+		}
+		addresses = append(addresses, addr)
+	}
+	return addresses, nil
 }
 
 func PortForFQDN(points []Endpoint) (int32, error) {

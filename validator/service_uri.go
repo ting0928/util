@@ -56,5 +56,10 @@ func ValidateApiPrefix(prefix string) error {
 	if err != nil || u.IsAbs() || u.Host != "" || u.RawQuery != "" || u.Fragment != "" {
 		return fmt.Errorf("invalid NFService.apiPrefix %q", prefix)
 	}
+	// The prefix is copied into the API root as-is, so it must already be a
+	// correctly escaped path (e.g. "/a%20b", not "/a b").
+	if u.EscapedPath() != prefix {
+		return fmt.Errorf("NFService.apiPrefix %q is not a properly escaped path", prefix)
+	}
 	return nil
 }

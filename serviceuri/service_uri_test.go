@@ -123,6 +123,123 @@ func TestBuildTable(t *testing.T) {
 			service:   Service{Scheme: "http"},
 			errorPart: "no usable",
 		},
+		{
+			// TS 29.510 NFService.ipEndPoints: with HTTP, service IP addresses take
+			// precedence over the NFProfile FQDN (e.g. OAI UDR registration).
+			name:    "Service_IP_precedence_over_profile_FQDN",
+			profile: Profile{FQDN: "oai-udr"},
+			service: Service{
+				Scheme:    "http",
+				Endpoints: []Endpoint{{IPv4Address: "192.168.70.136", Port: 8080}},
+			},
+			want: "http://192.168.70.136:8080",
+		},
+		{
+			name:    "Service_FQDN_precedence_over_profile_FQDN",
+			profile: Profile{FQDN: "profile.example.org"},
+			service: Service{Scheme: "https", FQDN: "svc.example.org"},
+			want:    "https://svc.example.org:443",
+		},
+		{
+			name:    "Profile_IPv4_fallback",
+			profile: Profile{IPv4Addresses: []string{"10.0.0.1"}},
+			service: Service{Scheme: "http", Endpoints: []Endpoint{{Port: 8000}}},
+			want:    "http://10.0.0.1:8000",
+		},
+		{
+			name:    "Profile_IPv6_fallback",
+			profile: Profile{IPv6Addresses: []string{"2001:db8::2"}},
+			service: Service{Scheme: "http"},
+			want:    "http://[2001:db8::2]:80",
+		},
+		{
+			name:      "Profile_invalid_IPv4",
+			profile:   Profile{IPv4Addresses: []string{"999.1.2.3"}},
+			service:   Service{Scheme: "http"},
+			errorPart: "NFProfile IPv4",
+		},
+		{
+			name:      "Profile_hostname_as_IPv4",
+			profile:   Profile{IPv4Addresses: []string{"amf.free5gc.org"}},
+			service:   Service{Scheme: "http"},
+			errorPart: "NFProfile IPv4",
+		},
+		{
+			name:      "Profile_IPv4_in_IPv6_list",
+			profile:   Profile{IPv6Addresses: []string{"10.0.0.1"}},
+			service:   Service{Scheme: "http"},
+			errorPart: "NFProfile IPv6",
+		},
+		{
+			name: "Ambiguous_FQDN_ports",
+			service: Service{
+				Scheme:    "https",
+				FQDN:      "amf.example.org",
+				Endpoints: []Endpoint{{Port: 8001}, {Port: 8002}},
+			},
+			errorPart: "ambiguous",
+		},
+		{
+			name: "Endpoint_with_both_families",
+			service: Service{
+				Scheme:    "http",
+				Endpoints: []Endpoint{{IPv4Address: "10.0.0.1", IPv6Address: "2001:db8::1"}},
+			},
+			errorPart: "both",
+		},
+		{
+			name: "Endpoint_port_out_of_range",
+			service: Service{
+				Scheme:    "http",
+				Endpoints: []Endpoint{{IPv4Address: "10.0.0.1", Port: 70000}},
+			},
+			errorPart: "port",
+		},
+		{
+			name: "InterPLMN_requires_FQDN",
+			service: Service{
+				Scheme:    "http",
+				Endpoints: []Endpoint{{IPv4Address: "10.0.0.1", Port: 8000}},
+			},
+			opts:      Options{InterPLMN: true},
+			errorPart: "FQDN",
+		},
+		{
+			name: "IndirectSCP_requires_FQDN",
+			service: Service{
+				Scheme:    "http",
+				Endpoints: []Endpoint{{IPv4Address: "10.0.0.1", Port: 8000}},
+			},
+			opts:      Options{IndirectSCP: true},
+			errorPart: "FQDN",
+		},
+		{
+			name: "Legacy_scheme_mismatch",
+			service: Service{
+				Scheme:    "https",
+				APIPrefix: "http://10.0.0.1:8000",
+			},
+			opts:      Options{AllowLegacyAbsoluteAPIPrefix: true},
+			errorPart: "invalid legacy",
+		},
+		{
+			name: "Trailing_slash_trimmed",
+			service: Service{
+				Scheme:    "http",
+				APIPrefix: "/sbi/",
+				Endpoints: []Endpoint{{IPv4Address: "10.0.0.1", Port: 8000}},
+			},
+			want: "http://10.0.0.1:8000/sbi",
+		},
+		{
+			name: "APIPrefix_with_space",
+			service: Service{
+				Scheme:    "http",
+				APIPrefix: "/a b",
+				Endpoints: []Endpoint{{IPv4Address: "10.0.0.1", Port: 8000}},
+			},
+			errorPart: "apiPrefix",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -140,6 +257,31 @@ func TestBuildTable(t *testing.T) {
 				t.Fatalf("got=%+v wantRoot=%q legacy=%v", got, tc.want, tc.legacy)
 			}
 		})
+	}
+}
+
+// TS 29.510 NOTE 7: when several addresses are registered, the consumer selects
+// one of them randomly. Every result must be one of the registered addresses.
+func TestBuildSelectsRegisteredAddress(t *testing.T) {
+	service := Service{
+		Scheme: "http",
+		Endpoints: []Endpoint{
+			{IPv4Address: "10.0.0.1", Port: 8000},
+			{IPv4Address: "10.0.0.2", Port: 8000},
+		},
+	}
+	allowed := map[string]bool{
+		"http://10.0.0.1:8000": true,
+		"http://10.0.0.2:8000": true,
+	}
+	for i := 0; i < 20; i++ {
+		got, err := Build(Profile{}, service, Options{})
+		if err != nil {
+			t.Fatalf("error=%v", err)
+		}
+		if !allowed[got.APIRoot] {
+			t.Fatalf("unexpected APIRoot %q", got.APIRoot)
+		}
 	}
 }
 

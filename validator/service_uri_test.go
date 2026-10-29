@@ -71,6 +71,10 @@ func TestValidateApiPrefix(t *testing.T) {
 		{"Backslash", "/sbi\\x", true},
 		{"Control Character", "/sbi\x00", true},
 		{"Invalid Escape", "/sbi%zz", true},
+		{"Space", "/a b", true},
+		{"Unescaped Angle Bracket", "/a<b", true},
+		{"Escaped Space", "/a%20b", false},
+		{"Path Parameter", "/sbi;v=1", false},
 	}
 
 	for _, tt := range tests {
