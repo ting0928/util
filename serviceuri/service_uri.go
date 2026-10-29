@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/free5gc/util/validator"
 )
 
 // ErrAddressUnavailable indicates that another matching NFService may be tried.
@@ -64,7 +66,7 @@ func Build(profile Profile, service Service, opts Options) (Result, error) {
 		}
 		return Result{APIRoot: strings.TrimSuffix(u.String(), "/"), UsedLegacyAbsoluteAPIPrefix: true}, nil
 	}
-	if err := ValidateAPIPrefix(prefix); err != nil {
+	if err := validator.ValidateApiPrefix(prefix); err != nil {
 		return Result{}, err
 	}
 
@@ -88,7 +90,7 @@ func Build(profile Profile, service Service, opts Options) (Result, error) {
 	candidates := make([]Endpoint, 0, len(service.Endpoints))
 	for _, ep := range service.Endpoints {
 		if ep.IPv4Address != "" || ep.IPv6Address != "" {
-			if err := ValidateIPPoint(ep); err != nil {
+			if err := validator.ValidateIpEndPoint(ep.IPv4Address, ep.IPv6Address, ep.Port); err != nil {
 				return Result{}, err
 			}
 			candidates = append(candidates, ep)
@@ -120,32 +122,10 @@ func Build(profile Profile, service Service, opts Options) (Result, error) {
 	return Result{APIRoot: root}, err
 }
 
-func ValidateIPPoint(p Endpoint) error {
-	if p.IPv4Address != "" && p.IPv6Address != "" {
-		return fmt.Errorf("IpEndPoint cannot contain both IPv4 and IPv6")
-	}
-	if p.IPv4Address != "" {
-		ip := net.ParseIP(p.IPv4Address)
-		if ip == nil || ip.To4() == nil {
-			return fmt.Errorf("invalid IpEndPoint IPv4: %q", p.IPv4Address)
-		}
-	}
-	if p.IPv6Address != "" {
-		ip := net.ParseIP(p.IPv6Address)
-		if ip == nil || ip.To4() != nil {
-			return fmt.Errorf("invalid IpEndPoint IPv6: %q", p.IPv6Address)
-		}
-	}
-	if p.Port < 0 || p.Port > 65535 {
-		return fmt.Errorf("invalid IpEndPoint port: %d", p.Port)
-	}
-	return nil
-}
-
 func PortForFQDN(points []Endpoint) (int32, error) {
 	var result int32
 	for _, ep := range points {
-		if ep.Port < 0 || ep.Port > 65535 {
+		if !validator.IsValidPort(ep.Port) {
 			return 0, fmt.Errorf("invalid IpEndPoint port: %d", ep.Port)
 		}
 		if ep.Port == 0 {
@@ -159,27 +139,8 @@ func PortForFQDN(points []Endpoint) (int32, error) {
 	return result, nil
 }
 
-func ValidateAPIPrefix(prefix string) error {
-	if prefix == "" {
-		return nil
-	}
-	if !strings.HasPrefix(prefix, "/") || strings.HasPrefix(prefix, "//") || strings.ContainsAny(prefix, "?#\\") {
-		return fmt.Errorf("invalid NFService.apiPrefix path %q", prefix)
-	}
-	for _, r := range prefix {
-		if r < 0x20 || r == 0x7f {
-			return fmt.Errorf("control character in NFService.apiPrefix")
-		}
-	}
-	u, err := url.Parse(prefix)
-	if err != nil || u.IsAbs() || u.Host != "" || u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("invalid NFService.apiPrefix %q", prefix)
-	}
-	return nil
-}
-
 func BuildAPIRoot(scheme, host string, port int32, prefix string) (string, error) {
-	if port < 0 || port > 65535 {
+	if !validator.IsValidPort(port) {
 		return "", fmt.Errorf("invalid port %d", port)
 	}
 	if port == 0 {
