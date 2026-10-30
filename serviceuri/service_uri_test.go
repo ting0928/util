@@ -205,6 +205,40 @@ func TestBuildTable(t *testing.T) {
 			errorPart: "FQDN",
 		},
 		{
+			// TS 29.510 6.1.6.2.3 NOTE 1: inter-PLMN signalling uses the
+			// interPlmnFqdn of the NF Service Profile, if any.
+			name:    "InterPLMN_service_interPlmnFqdn",
+			profile: Profile{FQDN: "amf.local", InterPlmnFQDN: "amf.profile.mnc001.mcc001.3gppnetwork.org"},
+			service: Service{
+				Scheme:        "https",
+				FQDN:          "svc.local",
+				InterPlmnFQDN: "svc.mnc001.mcc001.3gppnetwork.org",
+				Endpoints:     []Endpoint{{IPv4Address: "10.0.0.1", Port: 8443}},
+			},
+			opts: Options{InterPLMN: true},
+			want: "https://svc.mnc001.mcc001.3gppnetwork.org:8443",
+		},
+		{
+			name:    "InterPLMN_profile_interPlmnFqdn",
+			profile: Profile{FQDN: "amf.local", InterPlmnFQDN: "amf.mnc001.mcc001.3gppnetwork.org"},
+			service: Service{Scheme: "https", FQDN: "svc.local"},
+			opts:    Options{InterPLMN: true},
+			want:    "https://amf.mnc001.mcc001.3gppnetwork.org:443",
+		},
+		{
+			name:    "InterPLMN_falls_back_to_fqdn",
+			profile: Profile{FQDN: "amf.mnc001.mcc001.3gppnetwork.org"},
+			service: Service{Scheme: "https"},
+			opts:    Options{InterPLMN: true},
+			want:    "https://amf.mnc001.mcc001.3gppnetwork.org:443",
+		},
+		{
+			name:    "IntraPLMN_ignores_interPlmnFqdn",
+			profile: Profile{FQDN: "amf.local", InterPlmnFQDN: "amf.mnc001.mcc001.3gppnetwork.org"},
+			service: Service{Scheme: "https"},
+			want:    "https://amf.local:443",
+		},
+		{
 			name: "IndirectSCP_requires_FQDN",
 			service: Service{
 				Scheme:    "http",

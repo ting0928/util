@@ -28,19 +28,25 @@ type Endpoint struct {
 
 type Profile struct {
 	FQDN          string
+	InterPlmnFQDN string
 	IPv4Addresses []string
 	IPv6Addresses []string
 }
 
 type Service struct {
-	Scheme    string
-	FQDN      string
-	APIPrefix string
-	Endpoints []Endpoint
+	Scheme        string
+	FQDN          string
+	InterPlmnFQDN string
+	APIPrefix     string
+	Endpoints     []Endpoint
 }
 
 type Options struct {
-	InterPLMN   bool
+	// InterPLMN selects inter-PLMN signalling (target NF in a different PLMN):
+	// the interPlmnFqdn is used and IP addresses are never used.
+	InterPLMN bool
+	// IndirectSCP selects Indirect Communication via an SCP, where the FQDN
+	// should be used (TS 29.510 6.1.6.2.3 NOTE 1).
 	IndirectSCP bool
 	// Legacy compatibility only; 3GPP apiPrefix must be a path, not a URL.
 	AllowLegacyAbsoluteAPIPrefix bool
@@ -72,12 +78,11 @@ func Build(profile Profile, service Service, opts Options) (Result, error) {
 		return Result{}, err
 	}
 
+	// TS 29.510 6.1.6.2.3 NOTE 1 / NOTE 8: an FQDN is used for inter-PLMN
+	// signalling, when TLS (https) is used, and for Indirect Communication.
 	requireFQDN := scheme == "https" || opts.InterPLMN || opts.IndirectSCP
 	if requireFQDN || service.FQDN != "" {
-		host := service.FQDN
-		if host == "" {
-			host = profile.FQDN
-		}
+		host := selectFQDN(profile, service, opts.InterPLMN)
 		if host == "" {
 			return Result{}, fmt.Errorf("FQDN is required for scheme %q and selected communication mode", scheme)
 		}
@@ -124,6 +129,28 @@ func Build(profile Profile, service Service, opts Options) (Result, error) {
 	}
 	root, err := BuildAPIRoot(scheme, addresses[rand.Intn(len(addresses))], port, prefix)
 	return Result{APIRoot: root}, err
+}
+
+// selectFQDN returns the FQDN used to build the API root (TS 29.510 6.1.6.2.3
+// NOTE 1). The NFService value has precedence over the NFProfile value.
+//
+// For inter-PLMN signalling the interPlmnFqdn is used. If no interPlmnFqdn is
+// registered, the fqdn is used instead: the NRF exposes a changed
+// interPlmnFqdn to NFs in a different PLMN as the "fqdn" attribute
+// (TS 29.510 6.1.6.2.3, interPlmnFqdn).
+func selectFQDN(profile Profile, service Service, interPLMN bool) string {
+	if interPLMN {
+		if service.InterPlmnFQDN != "" {
+			return service.InterPlmnFQDN
+		}
+		if profile.InterPlmnFQDN != "" {
+			return profile.InterPlmnFQDN
+		}
+	}
+	if service.FQDN != "" {
+		return service.FQDN
+	}
+	return profile.FQDN
 }
 
 // profileAddresses returns the NFProfile IPv4 and IPv6 addresses after

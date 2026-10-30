@@ -220,6 +220,142 @@ func TestResolveNFServiceURINilProfile(t *testing.T) {
 	}
 }
 
+// fixRandom makes candidate ordering deterministic: no shuffling and the
+// random number is always r.
+func fixRandom(t *testing.T, r int64) {
+	t.Helper()
+	origRand, origShuffle := randInt63n, shuffle
+	randInt63n = func(n int64) int64 {
+		if r >= n {
+			return n - 1
+		}
+		return r
+	}
+	shuffle = func(int, func(i, j int)) {}
+	t.Cleanup(func() { randInt63n, shuffle = origRand, origShuffle })
+}
+
+func instance(
+	id string, priority, capacity int32, services ...models.Nrf_NFDisc_NFService,
+) models.Nrf_NFDisc_NFProfile {
+	return models.Nrf_NFDisc_NFProfile{
+		NfInstanceId: id,
+		Priority:     priority,
+		Capacity:     capacity,
+		NfServices:   services,
+	}
+}
+
+func withPriority(s models.Nrf_NFDisc_NFService, priority, capacity int32) models.Nrf_NFDisc_NFService {
+	s.Priority = priority
+	s.Capacity = capacity
+	return s
+}
+
+// TS 29.510 6.1.6.2.2 NOTE 4: lower priority values are selected first.
+func TestResolveFromSearchResultPriority(t *testing.T) {
+	fixRandom(t, 0)
+	instances := []models.Nrf_NFDisc_NFProfile{
+		instance("low", 20, 0, ipv4Service("10.0.0.20", 8000)),
+		instance("high", 10, 0, ipv4Service("10.0.0.10", 8000)),
+	}
+	profile, got, err := ResolveFromSearchResult(instances, testServiceName, Options{})
+	if err != nil || profile.NfInstanceId != "high" || got.APIRoot != "http://10.0.0.10:8000" {
+		t.Fatalf("selected %v %q, error %v; want instance %q", profile, got.APIRoot, err, "high")
+	}
+}
+
+// TS 29.510 6.1.6.2.2: NFService priority has precedence over NFProfile priority.
+func TestResolveFromSearchResultServicePriorityPrecedence(t *testing.T) {
+	fixRandom(t, 0)
+	instances := []models.Nrf_NFDisc_NFProfile{
+		instance("profile-high", 1, 0, withPriority(ipv4Service("10.0.0.1", 8000), 50, 0)),
+		instance("profile-low", 100, 0, withPriority(ipv4Service("10.0.0.2", 8000), 5, 0)),
+	}
+	profile, _, err := ResolveFromSearchResult(instances, testServiceName, Options{})
+	if err != nil || profile.NfInstanceId != "profile-low" {
+		t.Fatalf("selected %v, error %v; want instance %q", profile, err, "profile-low")
+	}
+}
+
+// A higher priority candidate that cannot be resolved falls back to the next one.
+func TestResolveFromSearchResultPriorityFallback(t *testing.T) {
+	fixRandom(t, 0)
+	broken := registered(models.Nrf_NFDisc_NFService{Scheme: models.UriScheme_HTTPS})
+	instances := []models.Nrf_NFDisc_NFProfile{
+		instance("broken", 1, 0, broken),
+		instance("backup", 2, 0, ipv4Service("10.0.0.2", 8000)),
+	}
+	profile, _, err := ResolveFromSearchResult(instances, testServiceName, Options{})
+	if err != nil || profile.NfInstanceId != "backup" {
+		t.Fatalf("selected %v, error %v; want instance %q", profile, err, "backup")
+	}
+}
+
+// RFC 2782 weight selection within the same priority, used for capacity.
+func TestOrderCandidatesCapacity(t *testing.T) {
+	cands := func() []candidate {
+		return []candidate{
+			{service: models.Nrf_NFDisc_NFService{ServiceInstanceId: "w0"}, capacity: 0},
+			{service: models.Nrf_NFDisc_NFService{ServiceInstanceId: "w10"}, capacity: 10},
+			{service: models.Nrf_NFDisc_NFService{ServiceInstanceId: "w30"}, capacity: 30},
+		}
+	}
+	// Running sums in RFC 2782 order (weight 0 first): w0=0, w10=10, w30=40.
+	tests := []struct {
+		r     int64
+		first string
+	}{
+		{0, "w0"},
+		{1, "w10"},
+		{10, "w10"},
+		{11, "w30"},
+		{40, "w30"},
+	}
+	for _, tt := range tests {
+		fixRandom(t, tt.r)
+		got := orderCandidates(cands())
+		if len(got) != 3 || got[0].service.ServiceInstanceId != tt.first {
+			t.Fatalf("r=%d: first = %q, want %q", tt.r, got[0].service.ServiceInstanceId, tt.first)
+		}
+	}
+}
+
+func TestOrderCandidatesKeepsAllEntries(t *testing.T) {
+	in := []candidate{
+		{priority: 2, capacity: 5},
+		{priority: 1, capacity: 0},
+		{priority: 1, capacity: 7},
+		{priority: 3, capacity: 0},
+	}
+	got := orderCandidates(in)
+	if len(got) != len(in) {
+		t.Fatalf("got %d candidates, want %d", len(got), len(in))
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i-1].priority > got[i].priority {
+			t.Fatalf("candidates not ordered by priority: %+v", got)
+		}
+	}
+}
+
+func TestResolveNFServiceURIInterPLMN(t *testing.T) {
+	profile := &models.Nrf_NFDisc_NFProfile{
+		Fqdn:          "udm.local",
+		InterPlmnFqdn: "udm.5gc.mnc001.mcc001.3gppnetwork.org",
+		NfServices: []models.Nrf_NFDisc_NFService{
+			registered(models.Nrf_NFDisc_NFService{
+				Scheme:      models.UriScheme_HTTPS,
+				IpEndPoints: []models.Nrf_NFMgmt_IpEndPoint{{Ipv4Address: "10.0.0.1", Port: 443}},
+			}),
+		},
+	}
+	got, err := ResolveNFServiceURI(profile, testServiceName, Options{InterPLMN: true})
+	if err != nil || got.APIRoot != "https://udm.5gc.mnc001.mcc001.3gppnetwork.org:443" {
+		t.Fatalf("got %q, error %v", got.APIRoot, err)
+	}
+}
+
 func TestResolveFromSearchResult(t *testing.T) {
 	withoutService := models.Nrf_NFDisc_NFProfile{NfInstanceId: "no-service"}
 	invalid := models.Nrf_NFDisc_NFProfile{
