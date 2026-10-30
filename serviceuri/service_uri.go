@@ -1,6 +1,8 @@
-// Package serviceuri constructs a 3GPP NF service API root from separately
-// advertised scheme, service/profile addresses, endpoints, and apiPrefix.
-// It deliberately avoids a dependency on free5gc/openapi so any NF can use it.
+// Package serviceuri resolves the {apiRoot} of an NF service (TS 29.501 4.4.1)
+// from the NFProfile / NFService information returned by NRF discovery
+// (TS 29.510). Build works on plain values; ResolveNFServiceURI and
+// ResolveFromSearchResult accept the openapi discovery models directly, so
+// every NF can share one resolution implementation.
 package serviceuri
 
 import (
