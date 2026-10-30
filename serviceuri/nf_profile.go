@@ -10,18 +10,15 @@ import (
 )
 
 // ErrServiceNotFound indicates that no REGISTERED NFService with the requested
-// service name exists in the NF profile(s).
+// service name exists.
 var ErrServiceNotFound = errors.New("NFService not found")
 
-// randInt63n and shuffle are the random sources used for NF (service)
-// selection. Tests replace them to make the selection deterministic.
+// Random sources for NF selection; replaced in tests.
 var (
 	randInt63n = rand.Int63n
 	shuffle    = rand.Shuffle
 )
 
-// candidate is one REGISTERED NFService (with its NF profile) that offers the
-// requested service.
 type candidate struct {
 	profile  *models.Nrf_NFDisc_NFProfile
 	service  models.Nrf_NFDisc_NFService
@@ -29,13 +26,7 @@ type candidate struct {
 	capacity int32
 }
 
-// ResolveNFServiceURI returns the API root of the requested service from an
-// NF profile obtained through NRF discovery (TS 29.510 6.1.6.2.2 / 6.1.6.2.3).
-//
-// Only NFService instances in REGISTERED status are considered. When several
-// services match, they are tried in the order given by their priority and
-// capacity (see orderCandidates). If a service has no usable address
-// (ErrAddressUnavailable), the next one is tried; any other error is returned.
+// ResolveNFServiceURI returns the API root of service name in one NF profile.
 func ResolveNFServiceURI(
 	profile *models.Nrf_NFDisc_NFProfile,
 	name models.Nrf_NFMgmt_ServiceName,
@@ -44,67 +35,62 @@ func ResolveNFServiceURI(
 	if profile == nil {
 		return Result{}, errors.New("NF profile is nil")
 	}
-
-	var lastAddrErr error
-	for _, c := range orderCandidates(matchingCandidates(profile, name)) {
-		result, err := Build(toProfile(profile), toService(c.service), opts)
-		if errors.Is(err, ErrAddressUnavailable) {
-			lastAddrErr = err
-			continue
-		}
-		if err != nil {
-			return Result{}, fmt.Errorf("NFService %q of NF %s: %w", name, profile.NfInstanceId, err)
-		}
-		return result, nil
-	}
-	if lastAddrErr != nil {
-		return Result{}, fmt.Errorf("NFService %q of NF %s: %w", name, profile.NfInstanceId, lastAddrErr)
-	}
-	return Result{}, fmt.Errorf("%w: %q in NF %s", ErrServiceNotFound, name, profile.NfInstanceId)
+	_, result, err := resolve(matchingCandidates(profile, name), name, opts)
+	return result, err
 }
 
-// ResolveFromSearchResult selects an NF (service) instance from an NRF
-// discovery result and returns the selected NF profile and its API root.
-//
-// All REGISTERED NFService instances offering the requested service, across
-// all NF profiles, are tried in priority / capacity order (see
-// orderCandidates). Candidates that cannot be resolved are skipped.
+// ResolveFromSearchResult selects an NF instance from an NRF discovery result
+// and returns it with the API root of service name.
 func ResolveFromSearchResult(
 	instances []models.Nrf_NFDisc_NFProfile,
 	name models.Nrf_NFMgmt_ServiceName,
 	opts Options,
 ) (*models.Nrf_NFDisc_NFProfile, Result, error) {
-	var all []candidate
+	var cands []candidate
 	for i := range instances {
-		all = append(all, matchingCandidates(&instances[i], name)...)
+		cands = append(cands, matchingCandidates(&instances[i], name)...)
 	}
-	if len(all) == 0 {
-		return nil, Result{}, fmt.Errorf("%w: %q in NRF search result", ErrServiceNotFound, name)
-	}
-
-	var lastErr error
-	for _, c := range orderCandidates(all) {
-		result, err := Build(toProfile(c.profile), toService(c.service), opts)
-		if err != nil {
-			lastErr = fmt.Errorf("NFService %q of NF %s: %w", name, c.profile.NfInstanceId, err)
-			continue
-		}
-		return c.profile, result, nil
-	}
-	return nil, Result{}, fmt.Errorf("no NF instance provides a usable %q API root: %w", name, lastErr)
+	return resolve(cands, name, opts)
 }
 
-// matchingCandidates returns the REGISTERED services named name in profile,
-// nfServices first and then nfServiceList in key order.
+// resolve tries the candidates in selection order and returns the first one
+// that yields a valid API root.
+func resolve(
+	cands []candidate, name models.Nrf_NFMgmt_ServiceName, opts Options,
+) (*models.Nrf_NFDisc_NFProfile, Result, error) {
+	if len(cands) == 0 {
+		return nil, Result{}, fmt.Errorf("%w: %q", ErrServiceNotFound, name)
+	}
+	var lastErr error
+	for _, c := range orderCandidates(cands) {
+		result, err := Build(toProfile(c.profile), toService(c.service), opts)
+		if err == nil {
+			return c.profile, result, nil
+		}
+		lastErr = fmt.Errorf("NFService %q of NF %s: %w", name, c.profile.NfInstanceId, err)
+	}
+	return nil, Result{}, lastErr
+}
+
+// matchingCandidates returns the REGISTERED NFServices named name.
 //
-// TS 29.510 6.1.6.2.2: priority and capacity in the NFService have precedence
-// over those in the NFProfile. The generated models cannot tell an absent
-// value from 0, so a service value of 0 falls back to the NFProfile value.
+// TS 29.510 6.1.6.2.2: the NRF returns either nfServiceList or the deprecated
+// nfServices (NOTE 15), and NFService priority / capacity have precedence over
+// the NFProfile values. The models cannot tell an absent value from 0, so 0
+// falls back to the NFProfile value.
 func matchingCandidates(profile *models.Nrf_NFDisc_NFProfile, name models.Nrf_NFMgmt_ServiceName) []candidate {
+	services := profile.NfServices
+	if len(profile.NfServiceList) != 0 {
+		services = make([]models.Nrf_NFDisc_NFService, 0, len(profile.NfServiceList))
+		for _, s := range profile.NfServiceList {
+			services = append(services, s)
+		}
+	}
+
 	var out []candidate
-	add := func(s models.Nrf_NFDisc_NFService) {
+	for _, s := range services {
 		if s.ServiceName != name || s.NfServiceStatus != models.Nrf_NFMgmt_NFServiceStatus_REGISTERED {
-			return
+			continue
 		}
 		c := candidate{profile: profile, service: s, priority: s.Priority, capacity: s.Capacity}
 		if c.priority == 0 {
@@ -115,29 +101,12 @@ func matchingCandidates(profile *models.Nrf_NFDisc_NFProfile, name models.Nrf_NF
 		}
 		out = append(out, c)
 	}
-	for _, s := range profile.NfServices {
-		add(s)
-	}
-	keys := make([]string, 0, len(profile.NfServiceList))
-	for k := range profile.NfServiceList {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		add(profile.NfServiceList[k])
-	}
 	return out
 }
 
-// orderCandidates orders candidates for selection as required by TS 29.510
-// 6.1.6.2.2 NOTE 4 / 6.1.6.2.3 NOTE 2: priority and capacity are used the same
-// way as priority and weight for server selection in IETF RFC 2782.
-//
-// Lower priority values are tried first. Within one priority, the order is
-// built with the RFC 2782 weight algorithm: entries with weight 0 are placed
-// first, a uniform random number between 0 and the sum of the weights
-// (inclusive) is chosen, and the first entry whose running sum is greater
-// than or equal to it is selected; this is repeated for the remaining entries.
+// orderCandidates applies TS 29.510 6.1.6.2.2 NOTE 4: priority and capacity are
+// used like SRV priority and weight in IETF RFC 2782. Lower priority comes
+// first; within a priority, the RFC 2782 weighted random order is used.
 func orderCandidates(cands []candidate) []candidate {
 	sort.SliceStable(cands, func(i, j int) bool { return cands[i].priority < cands[j].priority })
 
@@ -153,22 +122,25 @@ func orderCandidates(cands []candidate) []candidate {
 	return ordered
 }
 
+// orderByWeight implements the RFC 2782 weight algorithm: weight 0 entries
+// first, pick a uniform random number in [0, sum], select the first entry whose
+// running sum is >= that number, and repeat for the remaining entries.
 func orderByWeight(group []candidate) []candidate {
 	remaining := append([]candidate(nil), group...)
 	shuffle(len(remaining), func(i, j int) { remaining[i], remaining[j] = remaining[j], remaining[i] })
+	sort.SliceStable(remaining, func(i, j int) bool {
+		return remaining[i].capacity == 0 && remaining[j].capacity != 0
+	})
 
 	ordered := make([]candidate, 0, len(group))
 	for len(remaining) > 0 {
-		sort.SliceStable(remaining, func(i, j int) bool {
-			return remaining[i].capacity == 0 && remaining[j].capacity != 0
-		})
 		var sum int64
 		for _, c := range remaining {
 			sum += int64(c.capacity)
 		}
 		r := randInt63n(sum + 1)
-		var running int64
 		pick := len(remaining) - 1
+		var running int64
 		for i, c := range remaining {
 			running += int64(c.capacity)
 			if running >= r {
@@ -194,11 +166,7 @@ func toProfile(p *models.Nrf_NFDisc_NFProfile) Profile {
 func toService(s models.Nrf_NFDisc_NFService) Service {
 	endpoints := make([]Endpoint, 0, len(s.IpEndPoints))
 	for _, ep := range s.IpEndPoints {
-		endpoints = append(endpoints, Endpoint{
-			IPv4Address: ep.Ipv4Address,
-			IPv6Address: ep.Ipv6Address,
-			Port:        ep.Port,
-		})
+		endpoints = append(endpoints, Endpoint{IPv4Address: ep.Ipv4Address, IPv6Address: ep.Ipv6Address, Port: ep.Port})
 	}
 	return Service{
 		Scheme:        string(s.Scheme),

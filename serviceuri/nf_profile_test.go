@@ -339,6 +339,34 @@ func TestOrderCandidatesKeepsAllEntries(t *testing.T) {
 	}
 }
 
+// TS 29.510 6.1.6.2.2 NOTE 15: the NRF returns either nfServiceList or the
+// deprecated nfServices; nfServiceList is used when present.
+func TestResolveNFServiceURIPrefersNFServiceList(t *testing.T) {
+	profile := &models.Nrf_NFDisc_NFProfile{
+		NfServices: []models.Nrf_NFDisc_NFService{ipv4Service("10.0.0.1", 8000)},
+		NfServiceList: map[string]models.Nrf_NFDisc_NFService{
+			"svc-1": ipv4Service("10.0.0.2", 8000),
+		},
+	}
+	got, err := ResolveNFServiceURI(profile, testServiceName, Options{})
+	if err != nil || got.APIRoot != "http://10.0.0.2:8000" {
+		t.Fatalf("got %q, error %v", got.APIRoot, err)
+	}
+}
+
+// A higher priority service of the same NF that cannot be resolved falls back
+// to the next service.
+func TestResolveNFServiceURIPriorityFallback(t *testing.T) {
+	fixRandom(t, 0)
+	broken := withPriority(registered(models.Nrf_NFDisc_NFService{Scheme: "ftp", Fqdn: "amf.example.org"}), 1, 0)
+	backup := withPriority(ipv4Service("10.0.0.2", 8000), 2, 0)
+	profile := &models.Nrf_NFDisc_NFProfile{NfServices: []models.Nrf_NFDisc_NFService{backup, broken}}
+	got, err := ResolveNFServiceURI(profile, testServiceName, Options{})
+	if err != nil || got.APIRoot != "http://10.0.0.2:8000" {
+		t.Fatalf("got %q, error %v", got.APIRoot, err)
+	}
+}
+
 func TestResolveNFServiceURIInterPLMN(t *testing.T) {
 	profile := &models.Nrf_NFDisc_NFProfile{
 		Fqdn:          "udm.local",

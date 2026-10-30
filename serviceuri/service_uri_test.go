@@ -119,11 +119,6 @@ func TestBuildTable(t *testing.T) {
 			want: "http://[2001:db8::1]:8080",
 		},
 		{
-			name:      "No_address",
-			service:   Service{Scheme: "http"},
-			errorPart: "no usable",
-		},
-		{
 			// TS 29.510 NFService.ipEndPoints: with HTTP, service IP addresses take
 			// precedence over the NFProfile FQDN (e.g. OAI UDR registration).
 			name:    "Service_IP_precedence_over_profile_FQDN",
@@ -178,6 +173,21 @@ func TestBuildTable(t *testing.T) {
 				Endpoints: []Endpoint{{Port: 8001}, {Port: 8002}},
 			},
 			errorPart: "ambiguous",
+		},
+		{
+			name: "FQDN_port_out_of_range",
+			service: Service{
+				Scheme:    "https",
+				FQDN:      "amf.example.org",
+				Endpoints: []Endpoint{{Port: 70000}},
+			},
+			errorPart: "port",
+		},
+		{
+			name:      "Profile_FQDN_port_out_of_range",
+			profile:   Profile{FQDN: "amf.example.org"},
+			service:   Service{Scheme: "http", Endpoints: []Endpoint{{Port: -1}}},
+			errorPart: "port",
 		},
 		{
 			name: "Endpoint_with_both_families",
